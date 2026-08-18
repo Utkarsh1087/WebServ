@@ -3,6 +3,7 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
+#include <algorithm>
 
 // Constructor initializes members
 Server::Server(int port) 
@@ -16,8 +17,7 @@ Server::~Server() {
 bool Server::init() {
     std::cout << "[INFO] Initializing WebServ on port " << m_port << "...\n";
 
-    // 1. Initialize Winsock DLL. 
-    // MAKEWORD(2, 2) requests version 2.2 of Winsock.
+    // 1. Initialize Winsock DLL.
     WSADATA wsaData;
     int result = WSAStartup(MAKEWORD(2, 2), &wsaData);
     if (result != 0) {
@@ -26,9 +26,6 @@ bool Server::init() {
     }
 
     // 2. Create the listening TCP socket.
-    // AF_INET specifies the IPv4 address family.
-    // SOCK_STREAM specifies a stream socket, which implies TCP.
-    // IPPROTO_TCP specifies the TCP protocol.
     m_listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (m_listenSocket == INVALID_SOCKET) {
         std::cerr << "[ERROR] socket creation failed with error: " << WSAGetLastError() << "\n";
@@ -37,11 +34,10 @@ bool Server::init() {
     }
 
     // 3. Bind the socket.
-    // We bind the socket to the port and specify that we accept connections from any IP interface (INADDR_ANY).
     sockaddr_in serverAddr;
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = INADDR_ANY; // Listen on all network interfaces (Ethernet, Wi-Fi, localhost)
-    serverAddr.sin_port = htons(m_port);     // htons converts host byte order to network byte order (Big Endian)
+    serverAddr.sin_addr.s_addr = INADDR_ANY; 
+    serverAddr.sin_port = htons(m_port);     
 
     result = bind(m_listenSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr));
     if (result == SOCKET_ERROR) {
@@ -52,7 +48,6 @@ bool Server::init() {
     }
 
     // 4. Start listening for incoming connections.
-    // SOMAXCONN is a constant representing the maximum backlog queue of pending connections.
     result = listen(m_listenSocket, SOMAXCONN);
     if (result == SOCKET_ERROR) {
         std::cerr << "[ERROR] listen failed with error: " << WSAGetLastError() << "\n";
@@ -70,11 +65,8 @@ void Server::start() {
     std::cout << "[INFO] Server started. Waiting for connections...\n";
 
     while (m_isRunning) {
-        // accept() blocks the execution thread until a client attempts to connect to our server.
-        // It returns a new client socket that we use to communicate with this specific client.
         SOCKET clientSocket = accept(m_listenSocket, NULL, NULL);
         if (clientSocket == INVALID_SOCKET) {
-            // If the server is stopped, accept() will fail. We check if we are still running.
             if (m_isRunning) {
                 std::cerr << "[WARNING] accept failed with error: " << WSAGetLastError() << "\n";
             }
@@ -97,133 +89,137 @@ void Server::stop() {
         m_listenSocket = INVALID_SOCKET;
     }
 
-    // Cleans up Winsock DLL resources
     WSACleanup();
     std::cout << "[INFO] Server stopped clean.\n";
 }
 
+void Server::addRoute(const std::string& method, const std::string& path, RouteHandler handler) {
+    m_router.addRoute(method, path, handler);
+}
+
 void Server::handleClient(SOCKET clientSocket) {
-    // 1. Read request from client
     const int bufferSize = 4096;
     std::vector<char> buffer(bufferSize, 0);
     
-    // recv() reads data from the socket stream into our buffer.
-    // In a blocking setup, it blocks until data is available.
+    // 1. Read the initial chunk of the HTTP request from the socket
     int bytesReceived = recv(clientSocket, buffer.data(), bufferSize - 1, 0);
     if (bytesReceived <= 0) {
-        // Connection closed or failed
         closesocket(clientSocket);
         return;
     }
 
-    // Ensure null-termination to treat the buffer as a string safely
     buffer[bytesReceived] = '\0';
-    std::string rawRequest(buffer.data());
+    std::string rawRequest(buffer.data(), bytesReceived);
 
-    // Print incoming request to the console for tracking
+    // 2. Parse headers and initial body
+    HttpRequest request = HttpParser::parse(rawRequest);
+    if (!request.isParsedSuccessfully) {
+        Router::sendResponse(clientSocket, 400, "Bad Request", "text/plain", "400 Bad Request: Malformed HTTP request");
+        closesocket(clientSocket);
+        return;
+    }
+
+    // 3. Handle Request Body (Content-Length verification for POST/PUT)
+    auto lenIt = request.headers.find("content-length");
+    if (lenIt != request.headers.end()) {
+        try {
+            size_t contentLength = std::stoull(lenIt->second);
+            
+            // Check if we have received the full body payload yet.
+            // If the body we have currently is smaller than Content-Length, we must read more bytes.
+            while (request.body.length() < contentLength) {
+                std::vector<char> bodyBuf(bufferSize, 0);
+                int bodyBytes = recv(clientSocket, bodyBuf.data(), bufferSize - 1, 0);
+                if (bodyBytes <= 0) {
+                    break; // Error or socket closed early
+                }
+                request.body.append(bodyBuf.data(), bodyBytes);
+            }
+        } catch (...) {
+            Router::sendResponse(clientSocket, 400, "Bad Request", "text/plain", "400 Bad Request: Invalid Content-Length");
+            closesocket(clientSocket);
+            return;
+        }
+    }
+
+    // Print request information
     std::cout << "\n----------------------------------------\n";
-    std::cout << "[REQUEST RECEIVED] Bytes: " << bytesReceived << "\n";
-    
-    // Print just the first few lines of the request so we don't flood the console
-    std::string firstLines = rawRequest.substr(0, rawRequest.find("\r\n\r\n"));
-    std::cout << firstLines << "\n";
+    std::cout << "[REQUEST] " << request.method << " " << request.uri << " (" << request.body.length() << " body bytes)\n";
     std::cout << "----------------------------------------\n";
 
-    // 2. Parse the Request Line (First line of HTTP request)
-    // Format: METHOD URI HTTP-VERSION (e.g. GET /index.html HTTP/1.1)
-    std::istringstream requestStream(rawRequest);
-    std::string method, uri, httpVersion;
-    requestStream >> method >> uri >> httpVersion;
-
-    // Validate request structure (HTTP/1.1 requires these three fields)
-    if (method.empty() || uri.empty() || httpVersion.empty()) {
-        std::string badRequestResponse = 
-            "HTTP/1.1 400 Bad Request\r\n"
-            "Content-Type: text/plain\r\n"
-            "Content-Length: 15\r\n"
-            "Connection: close\r\n\r\n"
-            "400 Bad Request";
-        send(clientSocket, badRequestResponse.c_str(), (int)badRequestResponse.length(), 0);
+    // 4. Security Check: Path Traversal Protection
+    if (request.uri.find("..") != std::string::npos) {
+        Router::sendResponse(clientSocket, 400, "Bad Request", "text/plain", "400 Bad Request: Invalid Path");
         closesocket(clientSocket);
         return;
     }
 
-    // 3. Resolve file path
-    // For safety and routing, default `/` to `/index.html`
+    // 5. Try Routing (Dynamic API endpoints take precedence)
+    if (m_router.route(request, clientSocket)) {
+        closesocket(clientSocket);
+        return;
+    }
+
+    // 6. Fallback: Static File Serving (Only allows GET and HEAD requests)
+    if (request.method != "GET" && request.method != "HEAD") {
+        Router::sendResponse(clientSocket, 405, "Method Not Allowed", "text/plain", "405 Method Not Allowed");
+        closesocket(clientSocket);
+        return;
+    }
+
+    // Resolve URL to local file path
+    std::string uri = request.uri;
     if (uri == "/" || uri.empty()) {
         uri = "/index.html";
     }
-
-    // In a production server, we MUST protect against path traversal (e.g., GET /../../Windows/system.ini)
-    // We will do a simple check here: if the URI contains "..", reject it with 400.
-    if (uri.find("..") != std::string::npos) {
-        std::string forbiddenResponse = 
-            "HTTP/1.1 400 Bad Request\r\n"
-            "Content-Type: text/plain\r\n"
-            "Content-Length: 29\r\n"
-            "Connection: close\r\n\r\n"
-            "400 Bad Request: Invalid Path";
-        send(clientSocket, forbiddenResponse.c_str(), (int)forbiddenResponse.length(), 0);
-        closesocket(clientSocket);
-        return;
-    }
-
-    // Target path in our public directory
     std::string localFilePath = "./public" + uri;
 
-    // 4. Serve the requested file
     bool fileFound = false;
     std::string fileContent = readFile(localFilePath, fileFound);
 
     std::string statusLine;
     std::string mimeType;
-    std::string body;
+    std::string responseBody;
 
     if (fileFound) {
         statusLine = "HTTP/1.1 200 OK\r\n";
         mimeType = getMimeType(localFilePath);
-        body = fileContent;
+        responseBody = fileContent;
     } else {
-        // Serve custom 404 page if it exists
         bool custom404Found = false;
         std::string custom404Content = readFile("./public/404.html", custom404Found);
         
         statusLine = "HTTP/1.1 404 Not Found\r\n";
-        mimeType = "text/html";
+        mimeType = "text/html; charset=utf-8";
         
         if (custom404Found) {
-            body = custom404Content;
+            responseBody = custom404Content;
         } else {
-            body = "<html><body><h1>404 Not Found</h1><p>The requested URL was not found on this server.</p></body></html>";
+            responseBody = "<html><body><h1>404 Not Found</h1><p>The requested URL was not found on this server.</p></body></html>";
         }
     }
 
-    // 5. Send HTTP Response
+    // 7. Write Response Headers
     std::ostringstream responseStream;
     responseStream << statusLine
                    << "Content-Type: " << mimeType << "\r\n"
-                   << "Content-Length: " << body.length() << "\r\n"
+                   << "Content-Length: " << responseBody.length() << "\r\n"
                    << "Connection: close\r\n"
-                   << "\r\n" // Crucial blank line separating headers from body
-                   << body;
+                   << "\r\n"; // Blank line
 
-    std::string fullResponse = responseStream.str();
-    
-    // send() writes bytes back into the client TCP socket stream
-    int bytesSent = send(clientSocket, fullResponse.c_str(), (int)fullResponse.length(), 0);
-    if (bytesSent == SOCKET_ERROR) {
-        std::cerr << "[WARNING] send failed with error: " << WSAGetLastError() << "\n";
-    } else {
-        std::cout << "[RESPONSE SENT] Status: " << (fileFound ? "200 OK" : "404 Not Found") 
-                  << " | Sent: " << bytesSent << " bytes\n";
+    std::string headers = responseStream.str();
+    send(clientSocket, headers.c_str(), (int)headers.length(), 0);
+
+    // 8. Write Response Body (Omitted if the client requested HEAD)
+    if (request.method != "HEAD") {
+        send(clientSocket, responseBody.c_str(), (int)responseBody.length(), 0);
     }
 
-    // 6. Close connection (HTTP/1.1 Connection: close behavior)
+    std::cout << "[RESPONSE SENT] " << (fileFound ? "200 OK" : "404 Not Found") << "\n";
     closesocket(clientSocket);
 }
 
 std::string Server::readFile(const std::string& filePath, bool& found) {
-    // Open in binary mode so we preserve exact byte structure of images, pdfs, etc.
     std::ifstream file(filePath, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
         found = false;
@@ -231,8 +227,6 @@ std::string Server::readFile(const std::string& filePath, bool& found) {
     }
 
     found = true;
-    
-    // Get size of file by checking the position of the pointer (which is at the end because of std::ios::ate)
     std::streamsize size = file.tellg();
     file.seekg(0, std::ios::beg);
 
@@ -247,15 +241,11 @@ std::string Server::readFile(const std::string& filePath, bool& found) {
 std::string Server::getMimeType(const std::string& filePath) {
     size_t dotPos = filePath.find_last_of('.');
     if (dotPos == std::string::npos) {
-        return "application/octet-stream"; // Default binary stream
+        return "application/octet-stream";
     }
 
     std::string ext = filePath.substr(dotPos);
-    
-    // Convert to lowercase to handle extensions like .HTML or .CSS
-    for (char& c : ext) {
-        c = tolower(c);
-    }
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
     if (ext == ".html" || ext == ".htm") return "text/html; charset=utf-8";
     if (ext == ".css") return "text/css";
