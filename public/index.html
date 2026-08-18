@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebServ - Custom HTTP Server</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="background-glow glow-1"></div>
+    <div class="background-glow glow-2"></div>
+    
+    <main class="container">
+        <header class="hero-section">
+            <div class="badge">HTTP/1.1 Web Server</div>
+            <h1>WebServ <span class="accent-text">Online</span></h1>
+            <p class="subtitle">A high-performance, low-level custom C++ HTTP server built from scratch using raw TCP sockets.</p>
+        </header>
+
+        <section class="status-card">
+            <div class="status-header">
+                <span class="status-indicator-dot pulsating"></span>
+                <span class="status-title">Server Status: Active</span>
+            </div>
+            
+            <div class="stats-grid">
+                <div class="stat-box">
+                    <span class="stat-label">Version</span>
+                    <span class="stat-value">v1.0.0</span>
+                </div>
+                <div class="stat-box">
+                    <span class="stat-label">Protocol</span>
+                    <span class="stat-value">HTTP/1.1</span>
+                </div>
+                <div class="stat-box">
+                    <span class="stat-label">Backend</span>
+                    <span class="stat-value">C++ Winsock</span>
+                </div>
+                <div class="stat-box">
+                    <span class="stat-label">Host</span>
+                    <span class="stat-value">127.0.0.1</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="features-section">
+            <h2>Core Achievements</h2>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">🔌</div>
+                    <h3>Raw TCP Sockets</h3>
+                    <p>Low-level socket initialization, port binding, and client connection management.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">⚡</div>
+                    <h3>Manual Parsing</h3>
+                    <p>Custom HTTP parser that reads raw byte streams and decodes methods, headers, and body payloads.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🛡️</div>
+                    <h3>Security Built-in</h3>
+                    <p>Robust path traversal defense and size limitations to prevent malicious exploitation.</p>
+                </div>
+            </div>
+        </section>
+
+        <footer>
+            <p>Developed with passion in C++ • WebServ 2026</p>
+        </footer>
+    </main>
+</body>
+</html>
