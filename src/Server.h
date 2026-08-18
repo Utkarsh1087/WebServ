@@ -4,14 +4,15 @@
 #include <winsock2.h>
 #include <string>
 #include "Router.h"
+#include "Config.h"
 
 // Link with Ws2_32.lib
 #pragma comment(lib, "ws2_32.lib")
 
 class Server {
 public:
-    // Constructor: sets up the server port
-    Server(int port);
+    // Constructor: accepts Config object containing server parameters
+    Server(const Config& config);
     
     // Destructor: ensures resources are cleaned up
     ~Server();
@@ -29,8 +30,12 @@ public:
     void addRoute(const std::string& method, const std::string& path, RouteHandler handler);
 
 private:
-    int m_port;                // The port number to listen on
-    SOCKET m_listenSocket;     // The listening socket file descriptor
+    int m_port;                // Port number
+    std::string m_root;        // Public document root directory
+    std::string m_index;       // Default home index file name
+    size_t m_maxBodySize;      // Max body size in bytes
+    
+    SOCKET m_listenSocket;     // The listening socket
     bool m_isRunning;          // flag indicating whether the server is running
     Router m_router;           // Router for handling dynamic API requests
 

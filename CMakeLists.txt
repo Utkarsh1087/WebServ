@@ -17,6 +17,8 @@ add_executable(webserv
     src/HttpParser.cpp
     src/Router.h
     src/Router.cpp
+    src/Config.h
+    src/Config.cpp
 )
 
 # Link standard libraries

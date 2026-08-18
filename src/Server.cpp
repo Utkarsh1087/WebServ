@@ -5,9 +5,14 @@
 #include <vector>
 #include <algorithm>
 
-// Constructor initializes members
-Server::Server(int port) 
-    : m_port(port), m_listenSocket(INVALID_SOCKET), m_isRunning(false) {}
+// Constructor copies parameters from Config
+Server::Server(const Config& config) 
+    : m_port(config.getPort()), 
+      m_root(config.getRoot()), 
+      m_index(config.getIndex()), 
+      m_maxBodySize(config.getMaxBodySize()),
+      m_listenSocket(INVALID_SOCKET), 
+      m_isRunning(false) {}
 
 // Destructor ensures the server is stopped and sockets are cleaned up
 Server::~Server() {
@@ -101,7 +106,7 @@ void Server::handleClient(SOCKET clientSocket) {
     const int bufferSize = 4096;
     std::vector<char> buffer(bufferSize, 0);
     
-    // 1. Read the initial chunk of the HTTP request from the socket
+    // 1. Read initial HTTP request chunk
     int bytesReceived = recv(clientSocket, buffer.data(), bufferSize - 1, 0);
     if (bytesReceived <= 0) {
         closesocket(clientSocket);
@@ -119,21 +124,37 @@ void Server::handleClient(SOCKET clientSocket) {
         return;
     }
 
-    // 3. Handle Request Body (Content-Length verification for POST/PUT)
+    // 3. Handle Request Body (Content-Length and Max Body Size validation)
     auto lenIt = request.headers.find("content-length");
     if (lenIt != request.headers.end()) {
         try {
             size_t contentLength = std::stoull(lenIt->second);
             
-            // Check if we have received the full body payload yet.
-            // If the body we have currently is smaller than Content-Length, we must read more bytes.
+            // Level 6 Security check: Limit request size to prevent memory exhaustion DoS
+            if (contentLength > m_maxBodySize) {
+                std::cerr << "[SECURITY WARNING] Rejected payload from client. Content-Length (" 
+                          << contentLength << ") exceeds limit (" << m_maxBodySize << " bytes)\n";
+                Router::sendResponse(clientSocket, 413, "Payload Too Large", "text/plain", "413 Payload Too Large: Content-Length exceeds limits");
+                closesocket(clientSocket);
+                return;
+            }
+            
+            // Loop and pull the remaining payload from the socket
             while (request.body.length() < contentLength) {
                 std::vector<char> bodyBuf(bufferSize, 0);
                 int bodyBytes = recv(clientSocket, bodyBuf.data(), bufferSize - 1, 0);
                 if (bodyBytes <= 0) {
-                    break; // Error or socket closed early
+                    break; 
                 }
+                
                 request.body.append(bodyBuf.data(), bodyBytes);
+                
+                // Double check if body starts overflowing the safety limit during read
+                if (request.body.length() > m_maxBodySize) {
+                    Router::sendResponse(clientSocket, 413, "Payload Too Large", "text/plain", "413 Payload Too Large");
+                    closesocket(clientSocket);
+                    return;
+                }
             }
         } catch (...) {
             Router::sendResponse(clientSocket, 400, "Bad Request", "text/plain", "400 Bad Request: Invalid Content-Length");
@@ -142,10 +163,8 @@ void Server::handleClient(SOCKET clientSocket) {
         }
     }
 
-    // Print request information
-    std::cout << "\n----------------------------------------\n";
+    // Print request details
     std::cout << "[REQUEST] " << request.method << " " << request.uri << " (" << request.body.length() << " body bytes)\n";
-    std::cout << "----------------------------------------\n";
 
     // 4. Security Check: Path Traversal Protection
     if (request.uri.find("..") != std::string::npos) {
@@ -154,7 +173,7 @@ void Server::handleClient(SOCKET clientSocket) {
         return;
     }
 
-    // 5. Try Routing (Dynamic API endpoints take precedence)
+    // 5. Route request to dynamic handlers
     if (m_router.route(request, clientSocket)) {
         closesocket(clientSocket);
         return;
@@ -167,12 +186,12 @@ void Server::handleClient(SOCKET clientSocket) {
         return;
     }
 
-    // Resolve URL to local file path
+    // Resolve URL to local file path using loaded root and index settings
     std::string uri = request.uri;
     if (uri == "/" || uri.empty()) {
-        uri = "/index.html";
+        uri = "/" + m_index;
     }
-    std::string localFilePath = "./public" + uri;
+    std::string localFilePath = m_root + uri;
 
     bool fileFound = false;
     std::string fileContent = readFile(localFilePath, fileFound);
@@ -187,7 +206,7 @@ void Server::handleClient(SOCKET clientSocket) {
         responseBody = fileContent;
     } else {
         bool custom404Found = false;
-        std::string custom404Content = readFile("./public/404.html", custom404Found);
+        std::string custom404Content = readFile(m_root + "/404.html", custom404Found);
         
         statusLine = "HTTP/1.1 404 Not Found\r\n";
         mimeType = "text/html; charset=utf-8";
@@ -205,17 +224,16 @@ void Server::handleClient(SOCKET clientSocket) {
                    << "Content-Type: " << mimeType << "\r\n"
                    << "Content-Length: " << responseBody.length() << "\r\n"
                    << "Connection: close\r\n"
-                   << "\r\n"; // Blank line
+                   << "\r\n"; 
 
     std::string headers = responseStream.str();
     send(clientSocket, headers.c_str(), (int)headers.length(), 0);
 
-    // 8. Write Response Body (Omitted if the client requested HEAD)
+    // 8. Write Response Body (Omitted if method is HEAD)
     if (request.method != "HEAD") {
         send(clientSocket, responseBody.c_str(), (int)responseBody.length(), 0);
     }
 
-    std::cout << "[RESPONSE SENT] " << (fileFound ? "200 OK" : "404 Not Found") << "\n";
     closesocket(clientSocket);
 }
 

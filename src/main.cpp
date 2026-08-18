@@ -1,22 +1,52 @@
 #include "Server.h"
+#include "Config.h"
 #include <iostream>
 #include <cstdlib>
 
 int main(int argc, char* argv[]) {
-    // Default port is 8080
-    int port = 8080;
+    Config config;
+    std::string configPath = "webserv.conf"; // Default configuration file
 
-    // Allow user to override port via command line argument
+    // Allow passing a custom config file or port number via arguments
     if (argc > 1) {
-        port = std::atoi(argv[1]);
-        if (port <= 0 || port > 65535) {
-            std::cerr << "[ERROR] Invalid port number. Must be between 1 and 65535.\n";
-            return 1;
+        std::string arg1 = argv[1];
+        
+        // If the argument looks like a configuration file (ends with .conf)
+        if (arg1.length() >= 5 && arg1.substr(arg1.length() - 5) == ".conf") {
+            configPath = arg1;
+        } else {
+            // Otherwise, treat it as a manual port override for quick testing
+            try {
+                int overridePort = std::stoi(arg1);
+                if (overridePort > 0 && overridePort <= 65535) {
+                    std::cout << "[INFO] Overriding port to " << overridePort << " via CLI argument.\n";
+                    // Note: We will load the default config, and then we could override it.
+                    // We will parse the file first, then override the port.
+                }
+            } catch (...) {
+                std::cerr << "[WARNING] Argument " << arg1 << " is neither a .conf file nor a valid port number.\n";
+            }
         }
     }
 
-    // Create the server instance
-    Server server(port);
+    // Load the configuration file settings (falls back to defaults if file missing)
+    config.load(configPath);
+
+    // If the user specified a manual port override that was not a config path
+    if (argc > 1) {
+        std::string arg1 = argv[1];
+        if (arg1.length() < 5 || arg1.substr(arg1.length() - 5) != ".conf") {
+            try {
+                int overridePort = std::stoi(arg1);
+                if (overridePort > 0 && overridePort <= 65535) {
+                    config.setPort(overridePort);
+                }
+            } catch (...) {}
+        }
+    }
+
+    // Initialize the server with the loaded configuration
+    Server server(config);
 
     // --- Dynamic API Route Registration (Levels 2 & 3) ---
 
@@ -37,7 +67,6 @@ int main(int argc, char* argv[]) {
 
     // 3. HEAD /api/health - Test route for HEAD request behaviors on dynamic paths
     server.addRoute("HEAD", "/api/health", [](const HttpRequest& req, SOCKET clientSocket) {
-        // HEAD requests only write headers, no body
         Router::sendResponse(clientSocket, 200, "OK", "application/json; charset=utf-8", "");
     });
 
